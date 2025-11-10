@@ -1,0 +1,11 @@
+test_cross_tenant_follow:committed
+test_cross_tenant_follow:failed:(sqlite3.IntegrityError) UNIQUE constraint failed: users.username
+[SQL: INSERT INTO users (tenant_id, username, deleted) VALUES (?, ?, ?)]
+[parameters: (1, 'u1', 0)]
+(Background on this error at: https://sqlalche.me/e/14/gkpj)
+test_cross_tenant_follow:failed:(sqlite3.IntegrityError) UNIQUE constraint failed: users.username
+[SQL: INSERT INTO users (tenant_id, username, deleted) VALUES (?, ?, ?)]
+[parameters: (1, 'u1', 0)]
+(Background on this error at: https://sqlalche.me/e/14/gkpj)
+test_concurrent_follow:count=1
+{"test_cross_tenant_follow": true, "test_concurrent_follow": true}
