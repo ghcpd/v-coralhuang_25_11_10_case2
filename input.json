@@ -1,0 +1,27 @@
+{
+  "issues": [
+    {
+      "id": "indexing-concurrency-ordering",
+      "description": "Concurrent commits overwrote session._changes and IN + CASE ordering caused nondeterministic search results.",
+      "sub_type": "Flaky behavior",
+      "error_example": {
+        "code": [
+          "p = Post.query.get(1)",
+          "p.body = 'Update from thread A'; db.session.commit()",
+          "q = Post.query.get(1)",
+          "q.body = 'Update from thread B'; db.session.commit()",
+          "# Only 'Update from thread A' indexed",
+          "ids = [5,2,3]",
+          "query = cls.query.filter(cls.id.in_(ids)).order_by(db.case(when, value=cls.id))",
+          "# Returned order [2,3,5] instead of [5,2,3]"
+        ],
+        "log_output": [
+          "Index content mismatch after concurrent commits.",
+          "Search result order inconsistent with backend IDs."
+        ]
+      },
+      "expected_result": "Transactions update the index independently; search results follow backend order exactly.",
+      "fix_suggestion": "Use transaction-local change tracking and deterministic reordering in search()."
+    }
+  ]
+}
