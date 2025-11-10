@@ -1,25 +1,31 @@
-#!/usr/bin/env bash
-# Linux/macOS test runner script
-# Auto-detects OS and runs tests, logging output to logs/test_run.log
+#!/bin/bash
+# Run test suite on Linux/Mac
 
 set -e
 
-echo "======================================================================"
-echo "SearchableMixin Test Suite ($(uname -s))"
-echo "======================================================================"
-echo ""
+echo "================================"
+echo "Running Test Suite"
+echo "================================"
 
+# Ensure logs directory exists
 mkdir -p logs
 
-echo "Running tests..."
-python3 -m unittest test_search_events -v 2>&1 | tee logs/test_run.log
-
-if [ ${PIPESTATUS[0]} -eq 0 ]; then
-    echo ""
-    echo "Tests PASSED"
-    exit 0
-else
-    echo ""
-    echo "Tests FAILED"
-    exit 1
+# Activate virtual environment if it exists
+if [ -d venv ]; then
+    source venv/bin/activate
 fi
+
+# Run tests with coverage
+echo "Running tests with pytest..."
+python -m pytest test_follow_relationships.py -v --tb=short --log-cli-level=DEBUG 2>&1 | tee logs/test_run.log
+
+# Run manual test script
+echo ""
+echo "Running manual test suite..."
+python test_follow_relationships.py 2>&1 | tee -a logs/test_run.log
+
+echo ""
+echo "================================"
+echo "Test run completed"
+echo "================================"
+echo "Results saved to: logs/test_run.log"

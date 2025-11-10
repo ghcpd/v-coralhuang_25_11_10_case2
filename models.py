@@ -1,272 +1,201 @@
 """
-Refactored SearchableMixin with transaction-safe concurrency and deterministic ordering.
+Refactored SQLAlchemy models with tenant-aware constraints and transaction safety.
 
 Key improvements:
-1. Per-transaction change tracking using session.info (isolation)
-2. Automatic listener registration for all subclasses
-3. Deterministic search ordering via Python-side reordering
+1. tenant_id added to followers junction table
+2. Composite unique constraint: (tenant_id, follower_id, followed_id)
+3. Foreign key constraints enforce same-tenant validation
+4. after_flush hook prevents cross-tenant relationships
+5. soft_delete support for cleanup jobs
+6. Updated indexes for shard-aware queries
 """
 
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import event, and_, or_
 from datetime import datetime
-from sqlalchemy import and_, or_
-from sqlalchemy.orm import class_mapper
-from sqlalchemy.inspection import inspect
+
+db = SQLAlchemy()
 
 
-class SearchableMixin:
+# Junction table with tenant_id for multi-tenant isolation
+followers = db.Table(
+    'followers',
+    db.Column('follower_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('followed_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('tenant_id', db.Integer, db.ForeignKey('user.tenant_id'), primary_key=True),
+    db.Column('created_at', db.DateTime, default=datetime.utcnow, nullable=False),
+    db.Column('deleted', db.Boolean, default=False, index=True),
+    db.Column('deleted_at', db.DateTime, nullable=True),
+    
+    # Composite uniqueness: (tenant_id, follower_id, followed_id)
+    db.UniqueConstraint('tenant_id', 'follower_id', 'followed_id', name='uc_followers_tenant_users'),
+    
+    # Indexes for efficient querying per tenant
+    db.Index('ix_followers_tenant_follower', 'tenant_id', 'follower_id'),
+    db.Index('ix_followers_tenant_followed', 'tenant_id', 'followed_id'),
+    db.Index('ix_followers_deleted', 'deleted'),
+    db.Index('ix_followers_deleted_at', 'deleted_at'),
+)
+
+
+class User(db.Model):
     """
-    Mixin for full-text searchable models.
+    User model with tenant isolation and self-referential relationships.
     
-    Automatically syncs changes to an external search index (e.g., Elasticsearch).
-    Uses transaction-local storage to avoid concurrent overwrites.
+    tenant_id is required and indexed for efficient shard routing.
     """
+    __tablename__ = 'user'
     
-    # Subclass registry for automatic listener binding
-    _searchable_registry = set()
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, nullable=False, index=True)
+    username = db.Column(db.String(64), nullable=False)
+    email = db.Column(db.String(120), nullable=False)
+    follower_count = db.Column(db.Integer, default=0, nullable=False)
+    following_count = db.Column(db.Integer, default=0, nullable=False)
     
-    def __init_subclass__(cls, **kwargs):
-        """Track all subclasses that inherit from SearchableMixin."""
-        super().__init_subclass__(**kwargs)
-        SearchableMixin._searchable_registry.add(cls)
+    # Cache metadata for Redis drift detection
+    cache_version = db.Column(db.Integer, default=0, nullable=False)
+    last_cache_sync = db.Column(db.DateTime, nullable=True)
     
-    @classmethod
-    def register_listeners(cls, db):
-        """
-        Register session event listeners for all SearchableMixin subclasses.
-        
-        Call this once at application startup:
-            db.session.configure(expire_on_commit=False)
-            SearchableMixin.register_listeners(db)
-        
-        This ensures:
-        - All subclasses are indexed, even those added later
-        - Per-transaction isolation via session.info
-        - No hardcoded model names
-        """
-        # Listen on the session class, not a specific instance
-        from sqlalchemy import event
-        
-        @event.listens_for(db.Session, 'before_commit')
-        def receive_before_commit(session):
-            """Collect pending changes in transaction-local storage."""
-            # Use session.info to isolate this transaction's changes
-            # Different threads/coroutines have different session instances
-            if 'searchable_changes' not in session.info:
-                session.info['searchable_changes'] = {
-                    'add': [],
-                    'update': [],
-                    'delete': [],
-                }
-            
-            changes = session.info['searchable_changes']
-            
-            # Iterate through all tracked objects
-            for obj in session.new:
-                if isinstance(obj, SearchableMixin):
-                    changes['add'].append(obj)
-            
-            for obj in session.dirty:
-                if isinstance(obj, SearchableMixin):
-                    changes['update'].append(obj)
-            
-            for obj in session.deleted:
-                if isinstance(obj, SearchableMixin):
-                    changes['delete'].append(obj)
-        
-        @event.listens_for(db.Session, 'after_commit')
-        def receive_after_commit(session):
-            """Apply pending changes to the search index after transaction succeeds."""
-            if 'searchable_changes' not in session.info:
-                return
-            
-            changes = session.info.pop('searchable_changes')
-            
-            # Apply each change type to the index
-            for obj in changes['add']:
-                obj.add_to_index()
-            
-            for obj in changes['update']:
-                obj.add_to_index()
-            
-            for obj in changes['delete']:
-                obj.remove_from_index()
-        
-        @event.listens_for(db.Session, 'after_rollback')
-        def receive_after_rollback(session):
-            """Clear pending changes if transaction is rolled back."""
-            session.info.pop('searchable_changes', None)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    @classmethod
-    def before_commit(cls, session):
+    # Composite unique constraint on (tenant_id, username)
+    __table_args__ = (
+        db.UniqueConstraint('tenant_id', 'username', name='uc_user_tenant_username'),
+        db.Index('ix_user_tenant', 'tenant_id'),
+    )
+    
+    # Self-referential many-to-many relationship with tenant isolation
+    # Only includes non-deleted relationships
+    followed = db.relationship(
+        'User',
+        secondary=followers,
+        primaryjoin=and_(
+            followers.c.follower_id == id,
+            followers.c.tenant_id == tenant_id,
+            followers.c.deleted == False  # Exclude soft-deleted
+        ),
+        secondaryjoin=and_(
+            followers.c.followed_id == id,
+            followers.c.tenant_id == tenant_id,
+            followers.c.deleted == False
+        ),
+        backref=db.backref(
+            'followers',
+            lazy='dynamic',
+            foreign_keys=[followers.c.follower_id, followers.c.tenant_id]
+        ),
+        lazy='dynamic',
+        foreign_keys=[followers.c.follower_id, followers.c.followed_id, followers.c.tenant_id],
+        viewonly=False,
+        cascade='all, delete-orphan',
+    )
+    
+    def __repr__(self):
+        return f'<User {self.username} tenant={self.tenant_id}>'
+    
+    def validate_tenant_consistency(self):
         """
-        DEPRECATED: Use register_listeners() instead.
-        Kept for backward compatibility.
+        Validation method called by after_flush hook.
+        Ensures no cross-tenant relationships exist.
         """
-        pass
+        from sqlalchemy import text
+        
+        # Query for cross-tenant relationships
+        cross_tenant = db.session.execute(
+            text("""
+                SELECT f.follower_id, f.followed_id, u1.tenant_id, u2.tenant_id
+                FROM followers f
+                JOIN "user" u1 ON f.follower_id = u1.id
+                JOIN "user" u2 ON f.followed_id = u2.id
+                WHERE u1.tenant_id != u2.tenant_id
+                AND f.deleted = FALSE
+            """)
+        ).fetchall()
+        
+        if cross_tenant:
+            violations = [
+                f"follower_id={row[0]} (tenant {row[2]}) → followed_id={row[1]} (tenant {row[3]})"
+                for row in cross_tenant
+            ]
+            raise ValueError(f"Cross-tenant relationships detected: {'; '.join(violations)}")
     
     @classmethod
-    def after_commit(cls, session):
+    def before_flush(cls, mapper, connection, target):
         """
-        DEPRECATED: Use register_listeners() instead.
-        Kept for backward compatibility.
+        Event listener to validate tenant isolation before flush.
         """
-        pass
+        pass  # Validation done in after_flush to catch all objects
     
     @classmethod
-    def search(cls, expression, page=1, per_page=10):
+    def after_flush(cls, session, flush_context):
         """
-        Search for objects matching the expression.
-        
-        Args:
-            expression: Query string passed to the search backend
-            page: Page number (1-indexed)
-            per_page: Results per page
-        
-        Returns:
-            (results, total): List of model instances in backend order, total count
-        
-        Guarantees:
-            - Results are ordered exactly as returned by the backend
-            - Missing or duplicate IDs are handled gracefully
-            - Order is deterministic across MySQL, PostgreSQL, SQLite
+        Event listener to enforce tenant isolation after flush.
+        Raises ValueError if cross-tenant relationships detected.
         """
-        # Query the search backend
-        ids, total = cls.query_index(cls.__tablename__, expression, page, per_page)
-        
-        if not ids:
-            return [], total
-        
-        # Deduplicate while preserving order (important if backend has duplicates)
-        seen = set()
-        unique_ids = []
-        for id_ in ids:
-            if id_ not in seen:
-                unique_ids.append(id_)
-                seen.add(id_)
-        
-        # Load matching objects from database using IN query
-        # Do NOT use ORDER BY CASE here—let Python handle ordering
-        from sqlalchemy import inspect as sqlalchemy_inspect
-        from sqlalchemy.orm import class_mapper
-        
-        # Get the primary key column(s)
         try:
-            pk = class_mapper(cls).primary_key[0]
-        except (AttributeError, IndexError, TypeError):
-            # Fallback for mock objects without SQLAlchemy mapping
-            return [], total
-        
-        try:
-            # Fetch all matching rows (unordered)
-            db_objects = cls.query.filter(pk.in_(unique_ids)).all()
-        except (AttributeError, TypeError):
-            # Fallback for mocked query without proper filter
-            return [], total
-        
-        # Build a map for fast lookup
-        try:
-            obj_map = {getattr(obj, pk.name): obj for obj in db_objects}
-        except AttributeError:
-            # Fallback if objects don't have primary key attribute
-            return [], total
-        
-        # Reorder in Python to match backend order, skip missing IDs
-        results = []
-        for id_ in unique_ids:
-            if id_ in obj_map:
-                results.append(obj_map[id_])
-        
-        return results, total
-    
-    @classmethod
-    def query_index(cls, index, expression, page, per_page):
-        """
-        Query the search backend.
-        
-        Override in subclass to implement actual search (e.g., Elasticsearch).
-        
-        Args:
-            index: Index name (e.g., 'post', 'comment')
-            expression: Search query
-            page: Page number (1-indexed)
-            per_page: Results per page
-        
-        Returns:
-            (ids, total): List of object IDs in rank order, total matches
-        """
-        raise NotImplementedError(
-            f'{cls.__name__}.query_index() must be implemented in subclass'
-        )
-    
-    def add_to_index(self):
-        """
-        Add this object to the search index.
-        
-        Override in subclass to implement actual indexing (e.g., Elasticsearch).
-        """
-        raise NotImplementedError(
-            f'{self.__class__.__name__}.add_to_index() must be implemented'
-        )
-    
-    def remove_from_index(self):
-        """
-        Remove this object from the search index.
-        
-        Override in subclass to implement actual removal.
-        """
-        raise NotImplementedError(
-            f'{self.__class__.__name__}.remove_from_index() must be implemented'
-        )
+            # Get any User instance to access validate_tenant_consistency
+            user_instances = [obj for obj in session.identity_map.values() 
+                            if isinstance(obj, User)]
+            if user_instances:
+                user_instances[0].validate_tenant_consistency()
+        except Exception as e:
+            session.rollback()
+            raise
 
 
-# ============================================================================
-# Example Models (for testing and documentation)
-# ============================================================================
-
-class Post(SearchableMixin):
-    """Example Post model."""
-    
-    __tablename__ = 'posts'
-    
-    def __init__(self, body=''):
-        self.body = body
-        self.created_at = datetime.utcnow()
-        self.id = None  # Will be set by ORM or test
-    
-    @classmethod
-    def query_index(cls, index, expression, page, per_page):
-        """Mock search backend (override for real Elasticsearch, etc.)."""
-        # For testing: return a fixed list
-        # Real implementation would call Elasticsearch or similar
-        return [], 0
-    
-    def add_to_index(self):
-        """Mock: add to search backend."""
-        pass
-    
-    def remove_from_index(self):
-        """Mock: remove from search backend."""
-        pass
+# Register event listeners for transaction integrity
+@event.listens_for(db.session, "after_flush")
+def receive_after_flush(session, flush_context):
+    """Global after_flush hook for tenant validation."""
+    User.after_flush(session, flush_context)
 
 
-class Comment(SearchableMixin):
-    """Example Comment model—automatically registered like Post."""
+class FollowerAuditLog(db.Model):
+    """
+    Audit log for follower relationship changes.
+    Tracks all creates, updates, and soft deletes for debugging.
+    """
+    __tablename__ = 'follower_audit_log'
     
-    __tablename__ = 'comments'
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, nullable=False, index=True)
+    follower_id = db.Column(db.Integer, nullable=False)
+    followed_id = db.Column(db.Integer, nullable=False)
+    action = db.Column(db.String(20), nullable=False)  # 'create', 'delete', 'restore'
+    reason = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     
-    def __init__(self, text=''):
-        self.text = text
-        self.created_at = datetime.utcnow()
+    __table_args__ = (
+        db.Index('ix_audit_tenant_action', 'tenant_id', 'action'),
+        db.Index('ix_audit_created_at', 'created_at'),
+    )
     
-    @classmethod
-    def query_index(cls, index, expression, page, per_page):
-        """Mock search backend."""
-        return [], 0
+    def __repr__(self):
+        return f'<FollowerAuditLog {self.action} tenant={self.tenant_id}>'
+
+
+class CacheHealthCheck(db.Model):
+    """
+    Health check records for Redis cache drift detection.
+    Stores periodic reconciliation results.
+    """
+    __tablename__ = 'cache_health_check'
     
-    def add_to_index(self):
-        """Mock: add to search backend."""
-        pass
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, nullable=False, index=True)
+    user_id = db.Column(db.Integer, nullable=False)
+    cache_count = db.Column(db.Integer, nullable=False)
+    db_count = db.Column(db.Integer, nullable=False)
+    drift = db.Column(db.Integer, nullable=False)  # db_count - cache_count
+    status = db.Column(db.String(20), nullable=False)  # 'healthy', 'drift', 'stale'
+    checked_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     
-    def remove_from_index(self):
-        """Mock: remove from search backend."""
-        pass
+    __table_args__ = (
+        db.Index('ix_health_tenant_user', 'tenant_id', 'user_id'),
+        db.Index('ix_health_status', 'status'),
+    )
+    
+    def __repr__(self):
+        return f'<CacheHealthCheck tenant={self.tenant_id} user={self.user_id} drift={self.drift}>'

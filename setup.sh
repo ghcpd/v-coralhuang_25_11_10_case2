@@ -1,36 +1,40 @@
-#!/usr/bin/env bash
-# Setup script: install dependencies and prepare environment
+#!/bin/bash
+# Setup script for multi-tenant follower system
 
 set -e
 
-echo "Setting up SearchableMixin test environment..."
-echo ""
+echo "================================"
+echo "Setting up development environment"
+echo "================================"
 
-# Detect OS
-OS_TYPE=$(uname -s)
-echo "Detected OS: $OS_TYPE"
-
-# Create virtual environment
-if [ ! -d "venv" ]; then
-    echo "Creating virtual environment..."
-    python3 -m venv venv
-fi
-
-# Activate virtual environment
-echo "Activating virtual environment..."
-source venv/bin/activate
-
-# Install dependencies
-echo "Installing dependencies..."
-pip install --upgrade pip
-pip install -r requirements.txt
-
-# Create logs directory
+# Create log directory
 mkdir -p logs
 
+# Create Python virtual environment
+echo "Creating virtual environment..."
+python3 -m venv venv
+source venv/bin/activate
+
+# Upgrade pip
+echo "Upgrading pip..."
+pip install --upgrade pip
+
+# Install dependencies
+echo "Installing Python dependencies..."
+pip install -r requirements.txt
+
+# Create database directories for shards
+echo "Creating database directories..."
+mkdir -p data/shard_1
+mkdir -p data/shard_2
+
 echo ""
-echo "Setup complete! To run tests, use:"
-echo "  ./run_test.sh  (Linux/macOS)"
-echo "  run_test.bat   (Windows)"
+echo "================================"
+echo "Setup completed successfully!"
+echo "================================"
 echo ""
-echo "Or activate venv and run: python -m unittest test_search_events -v"
+echo "Next steps:"
+echo "1. Activate venv: source venv/bin/activate"
+echo "2. Configure database URLs in .env"
+echo "3. Start Redis: redis-server"
+echo "4. Run tests: ./run_test.sh"

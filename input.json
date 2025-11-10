@@ -1,27 +1,19 @@
 {
-  "issues": [
-    {
-      "id": "indexing-concurrency-ordering",
-      "description": "Concurrent commits overwrote session._changes and IN + CASE ordering caused nondeterministic search results.",
-      "sub_type": "Flaky behavior",
-      "error_example": {
-        "code": [
-          "p = Post.query.get(1)",
-          "p.body = 'Update from thread A'; db.session.commit()",
-          "q = Post.query.get(1)",
-          "q.body = 'Update from thread B'; db.session.commit()",
-          "# Only 'Update from thread A' indexed",
-          "ids = [5,2,3]",
-          "query = cls.query.filter(cls.id.in_(ids)).order_by(db.case(when, value=cls.id))",
-          "# Returned order [2,3,5] instead of [5,2,3]"
-        ],
-        "log_output": [
-          "Index content mismatch after concurrent commits.",
-          "Search result order inconsistent with backend IDs."
-        ]
-      },
-      "expected_result": "Transactions update the index independently; search results follow backend order exactly.",
-      "fix_suggestion": "Use transaction-local change tracking and deterministic reordering in search()."
-    }
+  "context": "Production incident on tenant-based follower system",
+  "environment": {
+    "database": "PostgreSQL 14 with tenant-based sharding",
+    "cache": "Redis 7",
+    "workers": "Celery 5.3"
+  },
+  "models.py": "followers = db.Table('followers', db.Column('follower_id', db.Integer, db.ForeignKey('user.id')), db.Column('followed_id', db.Integer, db.ForeignKey('user.id')))\n\nclass User(db.Model):\n    id = db.Column(db.Integer, primary_key=True)\n    tenant_id = db.Column(db.Integer, index=True)\n    username = db.Column(db.String(64), unique=True)\n    followed = db.relationship('User', secondary=followers,\n        primaryjoin=(followers.c.follower_id == id),\n        secondaryjoin=(followers.c.followed_id == id),\n        backref=db.backref('followers', lazy='dynamic'), lazy='dynamic')",
+  "error_logs": [
+    "[ERROR] psycopg2.errors.UniqueViolation: duplicate key value violates unique constraint \"followers_pkey\"",
+    "[WARNING] Cross-tenant relationship detected: follower_id=101 (tenant 1) → followed_id=87 (tenant 2)",
+    "[INFO] Redis drift: cache=127 followers, DB=125 followers for user_id=45 tenant=1"
+  ],
+  "test_failures": [
+    "test_cross_tenant_follow FAILED: expected IntegrityError but transaction committed",
+    "test_soft_delete_cleanup FAILED: stale Redis key not invalidated",
+    "test_concurrent_follow FAILED: duplicate relationships created"
   ]
 }

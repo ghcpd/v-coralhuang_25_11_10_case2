@@ -2,15 +2,25 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy requirements and install
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    postgresql-client \
+    redis-server \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY models.py test_search_events.py ./
+COPY . .
 
 # Create logs directory
 RUN mkdir -p logs
 
-# Run tests
-CMD ["python", "-m", "unittest", "test_search_events", "-v"]
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Default command
+CMD ["python", "test_follow_relationships.py"]

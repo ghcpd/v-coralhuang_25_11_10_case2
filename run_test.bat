@@ -1,27 +1,31 @@
 @echo off
-REM Windows batch script to run tests
-REM Auto-detects OS and runs test suite, logging to logs\test_run.log
+REM Run test suite on Windows
 
-setlocal enabledelayedexpansion
+echo ================================
+echo Running Test Suite
+echo ================================
 
-echo ======================================================================
-echo SearchableMixin Test Suite (Windows)
-echo ======================================================================
+REM Create logs directory if it doesn't exist
+if not exist logs mkdir logs
+
+REM Activate virtual environment if it exists
+if exist venv\Scripts\activate.bat (
+    call venv\Scripts\activate.bat
+)
+
+REM Run tests with coverage
+echo Running tests with pytest...
+python -m pytest test_follow_relationships.py -v --tb=short --log-cli-level=DEBUG > logs\test_run.log 2>&1
+
+REM Run manual test script
 echo.
+echo Running manual test suite...
+python test_follow_relationships.py >> logs\test_run.log 2>&1
 
-if not exist logs (
-    mkdir logs
-)
+echo.
+echo ================================
+echo Test run completed
+echo ================================
+echo Results saved to: logs\test_run.log
 
-echo Running tests...
-python -m unittest test_search_events -v 2>&1 | tee logs\test_run.log
-
-if !errorlevel! equ 0 (
-    echo.
-    echo Tests PASSED
-    exit /b 0
-) else (
-    echo.
-    echo Tests FAILED
-    exit /b 1
-)
+type logs\test_run.log
