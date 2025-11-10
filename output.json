@@ -1,0 +1,40 @@
+{
+  "root_causes": [
+    "followers table lacked tenant_id constraint which allowed cross-tenant links",
+    "Missing composite uniqueness allowed duplicate relationships under concurrency",
+    "Redis cache was updated without coordination with DB causing drift on failures",
+    "Transactions were not shard-aware; no retry logic for IntegrityError or deadlocks",
+    "Soft deletes were not excluded from queries and cache invalidation"
+  ],
+  "refactored_schema_changes": [
+    "Added 'tenant_id' to followers table and composite uniqueness constraint (tenant_id, follower_id, followed_id)",
+    "Added 'deleted' soft-delete boolean to followers table and excluded deleted from relationship queries",
+    "Added validation hook to prevent cross-tenant relationships"
+  ],
+  "transaction_isolation_and_sharding": [
+    "Implemented ShardManager to map tenant->DB shard and provide session_scope with retries",
+    "Implemented coordinated_commit simulation with sequential commit and rollback on failure (simulate 2PC)"
+  ],
+  "cache_consistency": [
+    "Implemented versioned write-through cache (`VersionedCounter`) backed by FakeRedis for tests",
+    "Implemented lock-based updates to prevent duplicate writes and ensure recent versions win",
+    "Added drift_monitor to compare DB and cache counts per tenant and user"
+  ],
+  "soft_delete_sync": [
+    "Soft-deleted rows marked deleted=True are excluded from follower queries",
+    "Added tests to ensure cache doesn't count soft-deleted relationships",
+    "Cleanup strategy: periodic drift_monitor + background job can remove soft-deleted rows older than threshold"
+  ],
+  "tests": {
+    "files": ["tests/test_follow_relationships.py"],
+  "results": "6 passed, 0 failed, 1 warning",
+    "log_file": "logs/test_run.log"
+  },
+  "execution_status": "success",
+  "notes": [
+    "Two-phase commit is simulated in tests; production requires a real 2PC coordinator or distributed transaction manager for cross-shard atomicity",
+    "Redis lock is a naive implementation; replace with a robust algorithm (e.g., Redlock library) and use a real Redis cluster in production",
+    "Add scheduled jobs to run `drift_monitor` every X minutes to reconcile counts",
+    "Consider storing a canonical follower_count on users table updated inside DB transactions and using write-through cache for read performance"
+  ]
+}
