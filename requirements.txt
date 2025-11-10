@@ -1,0 +1,8 @@
+Flask==2.2.5
+SQLAlchemy==1.4.49
+psycopg2-binary==2.9.6
+redis==4.5.5
+redlock-py==3.0.0
+pytest==7.3.1
+fakeredis==1.7.0
+requests==2.31.0
