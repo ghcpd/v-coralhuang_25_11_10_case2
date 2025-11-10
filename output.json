@@ -1,0 +1,23 @@
+{
+  "root_causes": [
+    "followers table missing tenant_id leading to cross-tenant relationships",
+    "No uniqueness constraint per tenant",
+    "Cache inconsistencies due to race conditions and no versioning/locks",
+    "Global commits without shard-aware transactions causing data drift"
+  ],
+  "refactor_changes": [
+    "Added tenant_id column to followers",
+    "Created Follower model with composite unique constraint",
+    "Added after_flush validation on Follower creation",
+    "Implemented shard-aware session manager with two-phase commit",
+    "Implemented versioned write-through cache with redlock locking",
+    "Implemented drift repair utilities and soft-delete cleanup"
+  ],
+  "test_outcomes": [
+    {
+      "log_excerpt": ".....                                                                                 [100%]\n===================================== warnings summary =====================================\nmodels.py:10\n  C:\\Bug_Bash\\25_11_10\\v-coralhuang_25_11_10_case2\\models.py:10: MovedIn20Warning: Deprecated API features detected! These feature(s) are not compatible with SQLAlchemy 2.0. To prevent incompatible upgrades prior to updating applications, ensure requirements files are pinned to \"sqlalchemy<2.0\". Set environment variable SQLALCHEMY_WARN_20=1 to show all deprecation warnings.  Set environment variable SQLALCHEMY_SILENCE_UBER_WARNING=1 to silence this message. (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)\n    Base = declarative_base()\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n5 passed, 1 warning in 0.64s\n",
+      "return_code": 0
+    }
+  ],
+  "execution_status": "success"
+}
