@@ -1,0 +1,100 @@
+You are reviewing a production incident in a Flask + SQLAlchemy application that manages a self-referential many-to-many “followers” relationship between users.
+The system was extended to support multi-tenant sharding and Redis caching for follower counts. Each tenant has its own PostgreSQL shard but shares Redis and Celery infrastructure.
+After deployment, users reported inconsistent follower counts, cross-tenant relationships, and data drift between database and cache layers.
+
+The followers relationship is defined as:
+
+followers = db.Table(
+    'followers',
+    db.Column('follower_id', db.Integer, db.ForeignKey('user.id')),
+    db.Column('followed_id', db.Integer, db.ForeignKey('user.id'))
+)
+
+
+Each User model includes a tenant_id field, but the relationship table lacks this constraint.
+As a result, users from different tenants can follow each other, violating isolation.
+Redis caching further amplifies this issue because cached data expires inconsistently across shards.
+
+You must analyze the incident and refactor the design to guarantee cross-tenant integrity, transactional safety, and cache consistency under concurrency.
+
+Tasks
+
+Schema Hardening
+
+Add a composite uniqueness constraint (tenant_id, follower_id, followed_id).
+
+Add tenant_id column to followers and propagate it through ORM relationships.
+
+Enforce same-tenant validation via an after_flush hook.
+
+Transaction Isolation
+
+Replace global commits with shard-aware session management.
+
+Implement retry logic for IntegrityError and deadlocks.
+
+Support cross-shard atomic commits using a distributed transaction coordinator.
+
+Cache Consistency
+
+Replace naive Redis writes with versioned, write-through cache logic.
+
+Introduce distributed locking (e.g., Redlock) to prevent duplicate cache writes.
+
+Periodically verify Redis follower counts against PostgreSQL.
+
+Soft Delete Synchronization
+
+Ensure soft-deleted relationships (deleted=True) are excluded from queries.
+
+Add cleanup jobs to remove soft-deleted rows older than threshold.
+
+Testing Requirements
+
+Simulate concurrent follow and unfollow across tenants and shards.
+
+Test failure recovery when Redis or Celery workers crash mid-transaction.
+
+Verify reconciliation detects orphaned or cross-tenant links.
+
+Validate deterministic follower counts across PostgreSQL, Redis, and MySQL analytics replica.
+
+Deliverables
+
+models.py — refactored ORM with tenant-aware constraints and validation hooks.
+
+sharding_manager.py — shard-aware transaction context manager.
+
+test_follow_relationships.py — multi-tenant, multi-shard consistency tests.
+
+drift_monitor.py — reconciliation and drift reporting script.
+
+README.md — architecture overview, schema migration guide, and testing setup.
+
+output.json — structured summary of detected issues, fixes, and test outcomes.
+
+setup.sh, run_test.sh, run_test.bat, Dockerfile, requirements.txt — unified environment setup.
+
+Execution Requirements
+
+Input file: input.json (contains faulty models and logs).
+
+Output file: output.json (summarized analysis and validated results).
+
+Do not overwrite input.json.
+
+All test logs must be written to logs/test_run.log.
+
+If any component fails initialization, record it clearly in output.json instead of simulating success.
+
+Objective
+
+Your AI agent must read input.json, identify schema and transaction faults, refactor the model definition, and produce an output.json summarizing:
+
+Root causes
+
+Refactored schema changes
+
+Test verification results
+
+Execution status (success/failure with logs)
